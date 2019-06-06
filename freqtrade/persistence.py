@@ -285,6 +285,30 @@ class Trade(_DECL_BASE):
             f"{float(self.stop_loss) - float(self.initial_stop_loss):.8f} "
             f"and max observed rate was {self.max_rate:.8f}")
 
+    def adjust_stop_loss_short(self, current_price: float, stoploss: float, initial: bool = False):
+        """
+        This adjusts the stop loss to it's most recently observed setting
+        :param current_price: Current rate the asset is traded
+        :param stoploss: Stoploss as factor (sample -0.05 -> -5% below current price).
+        :param initial: Called to initiate stop_loss.
+            Skips everything if self.stop_loss is already set.
+        """
+
+        if initial and not (self.stop_loss is None or self.stop_loss == 0):
+            # Don't modify if called with initial and nothing to do
+            return
+
+        new_loss = float(current_price * (1 + abs(stoploss)))
+
+        # no stop loss assigned yet
+        if not self.stop_loss:
+            logger.debug("assigning new stop loss")
+            self.stop_loss = new_loss
+            self.stop_loss_pct = -1 * abs(stoploss)
+            self.initial_stop_loss = new_loss
+            self.initial_stop_loss_pct = -1 * abs(stoploss)
+            self.stoploss_last_update = datetime.utcnow()
+
     def update(self, order: Dict) -> None:
         """
         Updates this entity with amount and actual open/close rates.
@@ -385,6 +409,26 @@ class Trade(_DECL_BASE):
         profit = close_trade_price - open_trade_price
         return float(f"{profit:.8f}")
 
+    def calc_profit_short(
+            self,
+            rate: Optional[float] = None,
+            fee: Optional[float] = None) -> float:
+        """
+        Calculate the absolute profit in stake currency between Close and Open trade
+        :param fee: fee to use on the close rate (optional).
+        If rate is not set self.fee will be used
+        :param rate: close rate to compare with (optional).
+        If rate is not set self.close_rate will be used
+        :return:  profit in stake currency as float
+        """
+        open_trade_price = self.calc_open_trade_price()
+        close_trade_price = self.calc_close_trade_price(
+            rate=(rate or self.close_rate),
+            fee=(fee or self.fee_close)
+        )
+        profit = open_trade_price - close_trade_price
+        return float(f"{profit:.8f}")
+
     def calc_profit_percent(
             self,
             rate: Optional[float] = None,
@@ -403,6 +447,26 @@ class Trade(_DECL_BASE):
             fee=(fee or self.fee_close)
         )
         profit_percent = (close_trade_price / open_trade_price) - 1
+        return float(f"{profit_percent:.8f}")
+
+    def calc_profit_percent_short(
+            self,
+            rate: Optional[float] = None,
+            fee: Optional[float] = None) -> float:
+        """
+        Calculates the profit in percentage (including fee).
+        :param rate: rate to compare with (optional).
+        If rate is not set self.close_rate will be used
+        :param fee: fee to use on the close rate (optional).
+        :return: profit in percentage as float
+        """
+
+        open_trade_price = self.calc_open_trade_price()
+        close_trade_price = self.calc_close_trade_price(
+            rate=(rate or self.close_rate),
+            fee=(fee or self.fee_close)
+        )
+        profit_percent = (open_trade_price / close_trade_price) - 1
         return float(f"{profit_percent:.8f}")
 
     @staticmethod

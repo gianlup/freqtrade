@@ -20,7 +20,7 @@ from freqtrade.misc import file_dump_json
 from freqtrade.persistence import Trade
 from freqtrade.resolvers import ExchangeResolver, StrategyResolver
 from freqtrade.state import RunMode
-from freqtrade.strategy.interface import IStrategy, SellType
+from freqtrade.strategy.interface import IStrategy, SellType, BuyType
 
 logger = logging.getLogger(__name__)
 
@@ -233,80 +233,122 @@ class Backtesting(object):
             ticker[pair] = [x for x in ticker_data.itertuples()]
         return ticker
 
-    def _get_sell_trade_entry(
-            self, pair: str, buy_row: DataFrame,
+    def _get_exit_trade_entry(
+            self, pair: str, entry_row: DataFrame,
             partial_ticker: List, trade_count_lock: Dict, args: Dict) -> Optional[BacktestResult]:
 
         stake_amount = args['stake_amount']
         max_open_trades = args.get('max_open_trades', 0)
         trade = Trade(
-            open_rate=buy_row.open,
-            open_date=buy_row.date,
+            open_rate=entry_row.open,
+            open_date=entry_row.date,
             stake_amount=stake_amount,
-            amount=stake_amount / buy_row.open,
+            amount=stake_amount / entry_row.open,
             fee_open=self.fee,
             fee_close=self.fee
         )
 
         # calculate win/lose forwards from buy point
-        for sell_row in partial_ticker:
+        for exit_row in partial_ticker:
             if max_open_trades > 0:
                 # Increase trade_count_lock for every iteration
-                trade_count_lock[sell_row.date] = trade_count_lock.get(sell_row.date, 0) + 1
+                trade_count_lock[exit_row.date] = trade_count_lock.get(exit_row.date, 0) + 1
 
-            buy_signal = sell_row.buy
-            sell = self.strategy.should_sell(trade, sell_row.open, sell_row.date, buy_signal,
-                                             sell_row.sell, low=sell_row.low, high=sell_row.high)
-            if sell.sell_flag:
+            if args['side'] == 'buy':
+                sell = self.strategy.should_sell(trade, exit_row.open, exit_row.date, exit_row.buy,
+                                                 exit_row.sell, low=exit_row.low, high=exit_row.high)
 
-                trade_dur = int((sell_row.date - buy_row.date).total_seconds() // 60)
-                # Special handling if high or low hit STOP_LOSS or ROI
-                if sell.sell_type in (SellType.STOP_LOSS, SellType.TRAILING_STOP_LOSS):
-                    # Set close_rate to stoploss
-                    closerate = trade.stop_loss
-                elif sell.sell_type == (SellType.ROI):
-                    # get next entry in min_roi > to trade duration
-                    # Interface.py skips on trade_duration <= duration
-                    roi_entry = max(list(filter(lambda x: trade_dur >= x,
-                                                self.strategy.minimal_roi.keys())))
-                    roi = self.strategy.minimal_roi[roi_entry]
+                if sell.sell_flag:
+                    trade_dur = int((exit_row.date - entry_row.date).total_seconds() // 60)
+                    # Special handling if high or low hit STOP_LOSS or ROI
+                    if sell.sell_type in (SellType.STOP_LOSS, SellType.TRAILING_STOP_LOSS):
+                        # Set close_rate to stoploss
+                        closerate = trade.stop_loss
+                    elif sell.sell_type == SellType.ROI:
+                        # get next entry in min_roi > to trade duration
+                        # Interface.py skips on trade_duration <= duration
+                        roi_entry = max(list(filter(lambda x: trade_dur >= x,
+                                                    self.strategy.minimal_roi.keys())))
+                        roi = self.strategy.minimal_roi[roi_entry]
 
-                    # - (Expected abs profit + open_rate + open_fee) / (fee_close -1)
-                    closerate = - (trade.open_rate * roi + trade.open_rate *
-                                   (1 + trade.fee_open)) / (trade.fee_close - 1)
-                else:
-                    closerate = sell_row.open
+                        # - (Expected abs profit + open_rate + open_fee) / (fee_close -1)
+                        closerate = - (trade.open_rate * roi + trade.open_rate *
+                                       (1 + trade.fee_open)) / (trade.fee_close - 1)
+                    else:
+                        closerate = exit_row.open
 
-                return BacktestResult(pair=pair,
-                                      profit_percent=trade.calc_profit_percent(rate=closerate),
-                                      profit_abs=trade.calc_profit(rate=closerate),
-                                      open_time=buy_row.date,
-                                      close_time=sell_row.date,
-                                      trade_duration=trade_dur,
-                                      open_index=buy_row.Index,
-                                      close_index=sell_row.Index,
-                                      open_at_end=False,
-                                      open_rate=buy_row.open,
-                                      close_rate=closerate,
-                                      sell_reason=sell.sell_type
-                                      )
+                    return BacktestResult(pair=pair,
+                                          profit_percent=trade.calc_profit_percent(rate=closerate),
+                                          profit_abs=trade.calc_profit(rate=closerate),
+                                          open_time=entry_row.date,
+                                          close_time=exit_row.date,
+                                          trade_duration=trade_dur,
+                                          open_index=entry_row.Index,
+                                          close_index=exit_row.Index,
+                                          open_at_end=False,
+                                          open_rate=entry_row.open,
+                                          close_rate=closerate,
+                                          sell_reason=sell.sell_type
+                                          )
+            else:
+                buy = self.strategy.should_buy(trade, exit_row.open, exit_row.date, exit_row.buy,
+                                               exit_row.sell, low=exit_row.low, high=exit_row.high)
+
+                if buy.buy_flag:
+                    trade_dur = int((exit_row.date - entry_row.date).total_seconds() // 60)
+                    # Special handling if high or low hit STOP_LOSS or ROI
+                    if buy.buy_type in (BuyType.STOP_LOSS, BuyType.TRAILING_STOP_LOSS):
+                        # Set close_rate to stoploss
+                        closerate = trade.stop_loss
+                    else:
+                        closerate = exit_row.open
+
+                    return BacktestResult(pair=pair,
+                                          profit_percent=trade.calc_profit_percent_short(rate=closerate),
+                                          profit_abs=trade.calc_profit_short(rate=closerate),
+                                          open_time=entry_row.date,
+                                          close_time=exit_row.date,
+                                          trade_duration=trade_dur,
+                                          open_index=entry_row.Index,
+                                          close_index=exit_row.Index,
+                                          open_at_end=False,
+                                          open_rate=entry_row.open,
+                                          close_rate=closerate,
+                                          sell_reason=buy.buy_type
+                                          )
         if partial_ticker:
             # no sell condition found - trade stil open at end of backtest period
-            sell_row = partial_ticker[-1]
-            btr = BacktestResult(pair=pair,
-                                 profit_percent=trade.calc_profit_percent(rate=sell_row.open),
-                                 profit_abs=trade.calc_profit(rate=sell_row.open),
-                                 open_time=buy_row.date,
-                                 close_time=sell_row.date,
-                                 trade_duration=int((
-                                     sell_row.date - buy_row.date).total_seconds() // 60),
-                                 open_index=buy_row.Index,
-                                 close_index=sell_row.Index,
-                                 open_at_end=True,
-                                 open_rate=buy_row.open,
-                                 close_rate=sell_row.open,
-                                 sell_reason=SellType.FORCE_SELL
-                                 )
+            exit_row = partial_ticker[-1]
+            if args['side'] == 'buy':
+                btr = BacktestResult(pair=pair,
+                                     profit_percent=trade.calc_profit_percent(rate=exit_row.open),
+                                     profit_abs=trade.calc_profit(rate=exit_row.open),
+                                     open_time=entry_row.date,
+                                     close_time=exit_row.date,
+                                     trade_duration=int((
+                                         exit_row.date - entry_row.date).total_seconds() // 60),
+                                     open_index=entry_row.Index,
+                                     close_index=exit_row.Index,
+                                     open_at_end=True,
+                                     open_rate=entry_row.open,
+                                     close_rate=exit_row.open,
+                                     sell_reason=SellType.FORCE_SELL
+                                     )
+            else:
+                btr = BacktestResult(pair=pair,
+                                     profit_percent=trade.calc_profit_percent_short(rate=exit_row.open),
+                                     profit_abs=trade.calc_profit_short(rate=exit_row.open),
+                                     open_time=entry_row.date,
+                                     close_time=exit_row.date,
+                                     trade_duration=int((
+                                        exit_row.date - entry_row.date).total_seconds() // 60),
+                                     open_index=entry_row.Index,
+                                     close_index=exit_row.Index,
+                                     open_at_end=True,
+                                     open_rate=entry_row.open,
+                                     close_rate=exit_row.open,
+                                     sell_reason=BuyType.FORCE_BUY
+                                     )
             logger.debug('Force_selling still open trade %s with %s perc - %s', btr.pair,
                          btr.profit_percent, btr.profit_abs)
             return btr
@@ -334,6 +376,7 @@ class Backtesting(object):
         end_date = args['end_date']
         trades = []
         trade_count_lock: Dict = {}
+        short = True
 
         # Dict of ticker-lists for performance (looping lists is a lot faster than dataframes)
         ticker: Dict = self._get_ticker_list(processed)
@@ -363,8 +406,12 @@ class Backtesting(object):
 
                 indexes[pair] += 1
 
-                if row.buy == 0 or row.sell == 1:
-                    continue  # skip rows where no buy signal or that would immediately sell off
+                if short:
+                    if row.buy == 0 and row.sell == 0:
+                        continue  # skip rows where no buy signal or that would immediately sell off
+                else:
+                    if row.buy == 0 or row.sell == 1:
+                        continue  # skip rows where no buy signal or that would immediately sell off
 
                 if (not position_stacking and pair in lock_pair_until
                         and row.date <= lock_pair_until[pair]):
@@ -377,7 +424,9 @@ class Backtesting(object):
                         continue
                     trade_count_lock[row.date] = trade_count_lock.get(row.date, 0) + 1
 
-                trade_entry = self._get_sell_trade_entry(pair, row, ticker[pair][indexes[pair]:],
+                args['side'] = 'buy' if row.buy else 'sell'
+
+                trade_entry = self._get_exit_trade_entry(pair, row, ticker[pair][indexes[pair]:],
                                                          trade_count_lock, args)
 
                 if trade_entry:

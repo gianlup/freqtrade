@@ -34,11 +34,11 @@ class SellType(Enum):
     Enum to distinguish between sell reasons
     """
     ROI = "roi"
-    STOP_LOSS = "stop_loss"
+    STOP_LOSS = "stop_loss_long"
     STOPLOSS_ON_EXCHANGE = "stoploss_on_exchange"
-    TRAILING_STOP_LOSS = "trailing_stop_loss"
-    SELL_SIGNAL = "sell_signal"
-    FORCE_SELL = "force_sell"
+    TRAILING_STOP_LOSS = "trailing_stop_loss_short"
+    SELL_SIGNAL = "sell_signal_long"
+    FORCE_SELL = "force_sell_long"
     NONE = ""
 
 
@@ -48,6 +48,27 @@ class SellCheckTuple(NamedTuple):
     """
     sell_flag: bool
     sell_type: SellType
+
+
+class BuyType(Enum):
+    """
+    Enum to distinguish between sell reasons
+    """
+    ROI = "roi"
+    STOP_LOSS = "stop_loss_short"
+    STOPLOSS_ON_EXCHANGE = "stoploss_on_exchange"
+    TRAILING_STOP_LOSS = "trailing_stop_loss_short"
+    BUY_SIGNAL = "buy_signal_short"
+    FORCE_BUY = "force_buy_short"
+    NONE = ""
+
+
+class BuyCheckTuple(NamedTuple):
+    """
+    NamedTuple for Sell type + reason
+    """
+    buy_flag: bool
+    buy_type: BuyType
 
 
 class IStrategy(ABC):
@@ -285,11 +306,57 @@ class IStrategy(ABC):
             logger.debug('Checking if trade is profitable..')
             if trade.calc_profit(rate=rate) <= 0:
                 return SellCheckTuple(sell_flag=False, sell_type=SellType.NONE)
+
         if sell and not buy and experimental.get('use_sell_signal', False):
             logger.debug('Sell signal received. Selling..')
             return SellCheckTuple(sell_flag=True, sell_type=SellType.SELL_SIGNAL)
 
         return SellCheckTuple(sell_flag=False, sell_type=SellType.NONE)
+
+    def should_buy(self, trade: Trade, rate: float, date: datetime, buy: bool,
+                    sell: bool, low: float = None, high: float = None,
+                    force_stoploss: float = 0) -> BuyCheckTuple:
+        """
+        This function evaluate if on the condition required to trigger a sell has been reached
+        if the threshold is reached and updates the trade record.
+        :param low: Only used during backtesting to simulate stoploss
+        :param high: Only used during backtesting, to simulate ROI
+        :param force_stoploss: Externally provided stoploss
+        :return: True if trade should be sold, False otherwise
+        """
+
+        # Set current rate to high for backtesting buy
+        current_rate = high or rate
+        current_profit = trade.calc_profit_percent_short(current_rate)
+
+        trade.adjust_min_max_rates(low or current_rate)
+
+        stoplossflag = self.stop_loss_reached_short(current_rate=current_rate, trade=trade,
+                                                    current_time=date, current_profit=current_profit,
+                                                    force_stoploss=force_stoploss, high=high)
+
+        if stoplossflag.buy_flag:
+            return stoplossflag
+
+        # Set current rate to low for backtesting buy
+        current_rate = low or rate
+        current_profit = trade.calc_profit_percent_short(current_rate)
+        experimental = self.config.get('experimental', {})
+
+        if sell and experimental.get('ignore_roi_if_buy_signal', False):
+            logger.debug('Buy signal still active - not selling.')
+            return BuyCheckTuple(buy_flag=False, buy_type=BuyType.NONE)
+
+        if experimental.get('sell_profit_only', False):
+            logger.debug('Checking if trade is profitable..')
+            if trade.calc_profit_short(rate=rate) <= 0:
+                return BuyCheckTuple(buy_flag=False, buy_type=BuyType.NONE)
+
+        if buy and not sell and experimental.get('use_sell_signal', False):
+            logger.debug('Sell signal received. Selling..')
+            return BuyCheckTuple(buy_flag=True, buy_type=BuyType.BUY_SIGNAL)
+
+        return BuyCheckTuple(buy_flag=False, buy_type=BuyType.NONE)
 
     def stop_loss_reached(self, current_rate: float, trade: Trade,
                           current_time: datetime, current_profit: float,
@@ -343,6 +410,32 @@ class IStrategy(ABC):
             return SellCheckTuple(sell_flag=True, sell_type=selltype)
 
         return SellCheckTuple(sell_flag=False, sell_type=SellType.NONE)
+
+    def stop_loss_reached_short(self, current_rate: float, trade: Trade,
+                                current_time: datetime, current_profit: float,
+                                force_stoploss: float, high: float = None) -> BuyCheckTuple:
+        """
+        Based on current profit of the trade and configured (trailing) stoploss,
+        decides to sell or not
+        :param current_profit: current profit in percent
+        """
+
+        stop_loss_value = force_stoploss if force_stoploss else self.stoploss
+
+        # Initiate stoploss with open_rate. Does nothing if stoploss is already set.
+        trade.adjust_stop_loss_short(trade.open_rate, stop_loss_value, initial=True)
+
+        # evaluate if the stoploss was hit if stoploss is not on exchange
+        if ((self.stoploss is not None) and
+            (trade.stop_loss <= current_rate) and
+                (not self.order_types.get('stoploss_on_exchange'))):
+
+            buytype = BuyType.STOP_LOSS
+
+            logger.debug('Stop loss hit.')
+            return BuyCheckTuple(buy_flag=True, buy_type=buytype)
+
+        return BuyCheckTuple(buy_flag=False, buy_type=BuyType.NONE)
 
     def min_roi_reached(self, trade: Trade, current_profit: float, current_time: datetime) -> bool:
         """
