@@ -213,11 +213,12 @@ class Backtesting(object):
 
         Used by backtest() - so keep this optimized for performance.
         """
-        headers = ['date', 'buy', 'open', 'close', 'sell', 'low', 'high']
+        headers = ['date', 'buy', 'open', 'close', 'sell', 'low', 'high', 'entryL', 'exitL', 'entryS', 'exitS']
         ticker: Dict = {}
         # Create ticker dict
         for pair, pair_data in processed.items():
             pair_data['buy'], pair_data['sell'] = 0, 0  # cleanup from previous run
+            pair_data['entryL'], pair_data['exitL'], pair_data['entryS'], pair_data['exitS'] = 0, 0, 0, 0
 
             ticker_data = self.advise_sell(
                 self.advise_buy(pair_data, {'pair': pair}), {'pair': pair})[headers].copy()
@@ -225,6 +226,10 @@ class Backtesting(object):
             # to avoid using data from future, we buy/sell with signal from previous candle
             ticker_data.loc[:, 'buy'] = ticker_data['buy'].shift(1)
             ticker_data.loc[:, 'sell'] = ticker_data['sell'].shift(1)
+            ticker_data.loc[:, 'entryL'] = ticker_data['entryL'].shift(1)
+            ticker_data.loc[:, 'exitL'] = ticker_data['exitL'].shift(1)
+            ticker_data.loc[:, 'entryS'] = ticker_data['entryS'].shift(1)
+            ticker_data.loc[:, 'exitS'] = ticker_data['exitS'].shift(1)
 
             ticker_data.drop(ticker_data.head(1).index, inplace=True)
 
@@ -255,8 +260,8 @@ class Backtesting(object):
                 trade_count_lock[exit_row.date] = trade_count_lock.get(exit_row.date, 0) + 1
 
             if args['side'] == 'buy':
-                sell = self.strategy.should_sell(trade, exit_row.open, exit_row.date, exit_row.buy,
-                                                 exit_row.sell, low=exit_row.low, high=exit_row.high)
+                sell = self.strategy.should_sell(trade, exit_row.open, exit_row.date, exit_row.entryL,
+                                                 exit_row.exitL, low=exit_row.low, high=exit_row.high)
 
                 if sell.sell_flag:
                     trade_dur = int((exit_row.date - entry_row.date).total_seconds() // 60)
@@ -291,8 +296,8 @@ class Backtesting(object):
                                           sell_reason=sell.sell_type
                                           )
             else:
-                buy = self.strategy.should_buy(trade, exit_row.open, exit_row.date, exit_row.buy,
-                                               exit_row.sell, low=exit_row.low, high=exit_row.high)
+                buy = self.strategy.should_buy(trade, exit_row.open, exit_row.date, exit_row.exitS,
+                                               exit_row.entryS, low=exit_row.low, high=exit_row.high)
 
                 if buy.buy_flag:
                     trade_dur = int((exit_row.date - entry_row.date).total_seconds() // 60)
@@ -407,11 +412,13 @@ class Backtesting(object):
                 indexes[pair] += 1
 
                 if short:
-                    if row.buy == 0 and row.sell == 0:
+                    if (row.entryL == 0 and row.entryS == 0):
                         continue  # skip rows where no buy signal or that would immediately sell off
+                    args['side'] = 'buy' if row.entryL else 'sell'
                 else:
                     if row.buy == 0 or row.sell == 1:
                         continue  # skip rows where no buy signal or that would immediately sell off
+                    args['side'] = 'buy' if row.buy else 'sell'
 
                 if (not position_stacking and pair in lock_pair_until
                         and row.date <= lock_pair_until[pair]):
@@ -423,8 +430,6 @@ class Backtesting(object):
                     if not trade_count_lock.get(row.date, 0) < max_open_trades:
                         continue
                     trade_count_lock[row.date] = trade_count_lock.get(row.date, 0) + 1
-
-                args['side'] = 'buy' if row.buy else 'sell'
 
                 trade_entry = self._get_exit_trade_entry(pair, row, ticker[pair][indexes[pair]:],
                                                          trade_count_lock, args)

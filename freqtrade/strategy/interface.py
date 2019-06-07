@@ -37,7 +37,7 @@ class SellType(Enum):
     STOP_LOSS = "stop_loss_long"
     STOPLOSS_ON_EXCHANGE = "stoploss_on_exchange"
     TRAILING_STOP_LOSS = "trailing_stop_loss_short"
-    SELL_SIGNAL = "sell_signal_long"
+    SELL_SIGNAL = "exit_long"
     FORCE_SELL = "force_sell_long"
     NONE = ""
 
@@ -58,7 +58,7 @@ class BuyType(Enum):
     STOP_LOSS = "stop_loss_short"
     STOPLOSS_ON_EXCHANGE = "stoploss_on_exchange"
     TRAILING_STOP_LOSS = "trailing_stop_loss_short"
-    BUY_SIGNAL = "buy_signal_short"
+    BUY_SIGNAL = "exit_short"
     FORCE_BUY = "force_buy_short"
     NONE = ""
 
