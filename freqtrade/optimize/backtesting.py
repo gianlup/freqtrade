@@ -471,31 +471,37 @@ class Backtesting(object):
             print(' LEFT OPEN TRADES REPORT '.center(133, '='))
             print(self._generate_text_table(data, results.loc[results.open_at_end], True))
 
+            # Metrics
+            import empyrical
+
             returns = results.sort_values(by=['close_time'])[['close_time', 'profit_percent']]
 
-            # print(returns.to_string())
+            trades = results['profit_percent'].count()
 
             returns = results.groupby(by=returns['close_time'].dt.date, as_index=True).agg({
                 'profit_percent': 'sum',
             }).rename(columns={'profit_percent': 'daily_return'}).asfreq('D').fillna(0)
 
+            returns = returns / self.config.get('max_open_trades', 1)
+
             # print(returns.to_string())
 
-            from empyrical import annual_return, max_drawdown, sharpe_ratio, sortino_ratio, calmar_ratio, cagr
-
             days = returns["daily_return"].count()
-            annual = annual_return(returns["daily_return"], annualization=365)
-            drawdown = max_drawdown(returns['daily_return'])
-            sharpe = sharpe_ratio(returns['daily_return'], annualization=365)
-            sortino = sortino_ratio(returns['daily_return'], annualization=365)
-            calmar = calmar_ratio(returns['daily_return'], annualization=365)
+            annual = empyrical.annual_return(returns["daily_return"], annualization=365)
+            drawdown = empyrical.max_drawdown(returns['daily_return'])
+            sharpe = empyrical.sharpe_ratio(returns['daily_return'], annualization=365)
+            sortino = empyrical.sortino_ratio(returns['daily_return'], annualization=365)
+            calmar = empyrical.calmar_ratio(returns['daily_return'], annualization=365)
 
             print()
-            print(f'Days: {days}')
-            print('Profit Mean: {0:.2f}'.format(returns["daily_return"].mean() * 100))
-            print('Profit Sum: {0:.2f}'.format(returns["daily_return"].sum() / 2 * 100))
-            print('Annual Returns: {0:.2f}'.format(annual))
-            print('Drawdown: {0:.2f}'.format(drawdown))
+            print('Days: {}'.format(days))
+            print('Trades: {}'.format(trades))
+            print('Profit Mean: {0:.2f}%'.format(returns["daily_return"].mean() * 100))
+            print('Profit Sum: {0:.2f}%'.format(returns["daily_return"].sum() * 100))
+            print('Max (day): {0:.2f}%'.format(returns["daily_return"].max() * 100))
+            print('Min (day): {0:.2f}%'.format(returns["daily_return"].min() * 100))
+            print('CAGR: {0:.2f}%'.format(annual * 100))
+            print('Drawdown: {0:.2f}%'.format(drawdown * 100))
             print('Sharpe: {0:.2f}'.format(sharpe))
             print('Sortino: {0:.2f}'.format(sortino))
             print('Calmar: {0:.2f}'.format(calmar))
